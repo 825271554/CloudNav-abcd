@@ -53,6 +53,7 @@ function App() {
   const [links, setLinks] = useState<LinkItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -162,6 +163,10 @@ function App() {
 
   // Mobile Search State
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
+
+  useEffect(() => {
+    setSelectedTag(null);
+  }, [selectedCategory]);
   
   // Category Action Auth State
   const [categoryActionAuth, setCategoryActionAuth] = useState<{
@@ -1160,6 +1165,7 @@ function App() {
 
   // 开始排序
   const startSorting = (categoryId: string) => {
+    setSelectedTag(null);
     setIsSortingMode(categoryId);
   };
 
@@ -1738,7 +1744,8 @@ function App() {
       result = result.filter(l => 
         l.title.toLowerCase().includes(q) || 
         l.url.toLowerCase().includes(q) ||
-        (l.description && l.description.toLowerCase().includes(q))
+        (l.description && l.description.toLowerCase().includes(q)) ||
+        l.tags?.some(tag => tag.toLowerCase().includes(q))
       );
     }
 
@@ -1747,6 +1754,11 @@ function App() {
       // 获取当前分类及其所有子分类的ID
       const subCategoryIds = categories.filter(c => c.parentId === selectedCategory).map(c => c.id);
       result = result.filter(l => l.categoryId === selectedCategory || subCategoryIds.includes(l.categoryId));
+    }
+
+    if (selectedTag) {
+      const normalizedSelectedTag = selectedTag.toLocaleLowerCase();
+      result = result.filter(link => link.tags?.some(tag => tag.toLocaleLowerCase() === normalizedSelectedTag));
     }
     
     // 按照order字段排序，如果没有order字段则按创建时间排序
@@ -1758,7 +1770,42 @@ function App() {
       // 改为升序排序，这样order值小(旧卡片)的排在前面，order值大(新卡片)的排在后面
       return aOrder - bOrder;
     });
-  }, [links, selectedCategory, searchQuery, categories, unlockedCategoryIds]);
+  }, [links, selectedCategory, selectedTag, searchQuery, categories, unlockedCategoryIds]);
+
+  const categoryTagData = useMemo(() => {
+    if (selectedCategory === 'all') return { tags: [] as { name: string; count: number }[], total: 0 };
+
+    const subCategoryIds = categories.filter(category => category.parentId === selectedCategory).map(category => category.id);
+    const categoryLinks = links.filter(link =>
+      !isCategoryLocked(link.categoryId) &&
+      (link.categoryId === selectedCategory || subCategoryIds.includes(link.categoryId))
+    );
+    const tagCounts = new Map<string, { name: string; count: number }>();
+
+    categoryLinks.forEach(link => {
+      link.tags?.forEach(tag => {
+        const name = tag.trim();
+        if (!name) return;
+        const key = name.toLocaleLowerCase();
+        const current = tagCounts.get(key);
+        tagCounts.set(key, { name: current?.name || name, count: (current?.count || 0) + 1 });
+      });
+    });
+
+    return {
+      tags: Array.from(tagCounts.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+      total: categoryLinks.length
+    };
+  }, [links, selectedCategory, categories, unlockedCategoryIds]);
+
+  const availableTags = useMemo(() => {
+    const uniqueTags = new Map<string, string>();
+    links.forEach(link => link.tags?.forEach(tag => {
+      const name = tag.trim();
+      if (name && !uniqueTags.has(name.toLocaleLowerCase())) uniqueTags.set(name.toLocaleLowerCase(), name);
+    }));
+    return Array.from(uniqueTags.values()).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }, [links]);
 
   // 计算其他目录的搜索结果
   const otherCategoryResults = useMemo(() => {
@@ -1784,7 +1831,8 @@ function App() {
       return (
         link.title.toLowerCase().includes(q) || 
         link.url.toLowerCase().includes(q) ||
-        (link.description && link.description.toLowerCase().includes(q))
+        (link.description && link.description.toLowerCase().includes(q)) ||
+        link.tags?.some(tag => tag.toLowerCase().includes(q))
       );
     });
 
@@ -2767,6 +2815,43 @@ function App() {
                      )}
                  </div>
 
+                 {selectedCategory !== 'all' && categoryTagData.tags.length > 0 && isSortingMode !== selectedCategory && (
+                   <div className="mb-6 overflow-x-auto scrollbar-hide" aria-label="按标签筛选">
+                     <div className="flex items-center gap-2 min-w-max pb-1">
+                       <button
+                         type="button"
+                         onClick={() => setSelectedTag(null)}
+                         aria-pressed={!selectedTag}
+                         className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                           !selectedTag
+                             ? 'bg-blue-600 border-blue-600 text-white'
+                             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-700'
+                         }`}
+                       >
+                         全部 <span className="ml-1 opacity-75">{categoryTagData.total}</span>
+                       </button>
+                       {categoryTagData.tags.map(tag => {
+                         const isActive = selectedTag?.toLocaleLowerCase() === tag.name.toLocaleLowerCase();
+                         return (
+                           <button
+                             key={tag.name.toLocaleLowerCase()}
+                             type="button"
+                             onClick={() => setSelectedTag(isActive ? null : tag.name)}
+                             aria-pressed={isActive}
+                             className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                               isActive
+                                 ? 'bg-blue-600 border-blue-600 text-white'
+                                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-700'
+                             }`}
+                           >
+                             {tag.name} <span className="ml-1 opacity-75">{tag.count}</span>
+                           </button>
+                         );
+                       })}
+                     </div>
+                   </div>
+                 )}
+
                  {displayedLinks.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-20 text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
                         {isCategoryLocked(selectedCategory) ? (
@@ -2884,6 +2969,7 @@ function App() {
             initialData={editingLink || (prefillLink as LinkItem)}
             aiConfig={aiConfig}
             defaultCategoryId={selectedCategory !== 'all' ? selectedCategory : undefined}
+            availableTags={availableTags}
           />
 
           {/* 右键菜单 */}

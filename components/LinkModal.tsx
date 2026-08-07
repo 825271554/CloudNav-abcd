@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Sparkles, Loader2, Pin, Wand2, Trash2 } from 'lucide-react';
+import { X, Sparkles, Loader2, Pin, Wand2, Trash2, Tag } from 'lucide-react';
 import { LinkItem, Category, AIConfig } from '../types';
 import { generateLinkDescription, suggestCategory } from '../services/geminiService';
 
@@ -12,15 +12,18 @@ interface LinkModalProps {
   initialData?: LinkItem;
   aiConfig: AIConfig;
   defaultCategoryId?: string;
+  availableTags?: string[];
 }
 
-const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete, categories, initialData, aiConfig, defaultCategoryId }) => {
+const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete, categories, initialData, aiConfig, defaultCategoryId, availableTags = [] }) => {
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
   const [categoryId, setCategoryId] = useState(categories[0]?.id || 'common');
   const [pinned, setPinned] = useState(false);
   const [icon, setIcon] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFetchingIcon, setIsFetchingIcon] = useState(false);
   const [autoFetchIcon, setAutoFetchIcon] = useState(true);
@@ -54,6 +57,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
         setCategoryId(initialData.categoryId);
         setPinned(initialData.pinned || false);
         setIcon(initialData.icon || '');
+        setTags(initialData.tags || []);
+        setTagInput('');
       } else {
         setTitle('');
         setUrl('');
@@ -63,6 +68,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
         setCategoryId(defaultCategory ? defaultCategoryId : (categories[0]?.id || 'common'));
         setPinned(false);
         setIcon('');
+        setTags([]);
+        setTagInput('');
       }
     }
   }, [isOpen, initialData, categories, defaultCategoryId]);
@@ -82,6 +89,39 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
     if (!initialData) return;
     onDelete && onDelete(initialData.id);
     onClose();
+  };
+
+  const addTags = (value: string) => {
+    const candidates = value
+      .split(/[,，]/)
+      .map(tag => tag.trim().replace(/\s+/g, ' '))
+      .filter(Boolean);
+
+    if (candidates.length === 0) return;
+
+    setTags(current => {
+      const next = [...current];
+      candidates.forEach(candidate => {
+        if (candidate.length <= 20 && next.length < 10 && !next.some(tag => tag.toLocaleLowerCase() === candidate.toLocaleLowerCase())) {
+          next.push(candidate);
+        }
+      });
+      return next;
+    });
+    setTagInput('');
+  };
+
+  const handleTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
+      event.preventDefault();
+      addTags(tagInput);
+    } else if (event.key === 'Backspace' && !tagInput && tags.length > 0) {
+      setTags(current => current.slice(0, -1));
+    }
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setTags(current => current.filter(tag => tag !== tagToRemove));
   };
 
   // 缓存自定义图标到KV空间
@@ -127,6 +167,17 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
       finalUrl = 'https://' + url;
     }
     
+    const pendingTags = tagInput.trim()
+      ? [...tags, ...tagInput.split(/[,，]/).map(tag => tag.trim()).filter(Boolean)]
+      : tags;
+    const normalizedTags = pendingTags.reduce<string[]>((result, tag) => {
+      const normalized = tag.replace(/\s+/g, ' ').slice(0, 20);
+      if (normalized && result.length < 10 && !result.some(item => item.toLocaleLowerCase() === normalized.toLocaleLowerCase())) {
+        result.push(normalized);
+      }
+      return result;
+    }, []);
+
     // 保存链接数据
     onSave({
       id: initialData?.id || '',
@@ -135,7 +186,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
       icon,
       description,
       categoryId,
-      pinned
+      pinned,
+      tags: normalizedTags
     });
     
     // 如果有自定义图标URL，缓存到KV空间
@@ -152,6 +204,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
       setIcon('');
       setDescription('');
       setPinned(false);
+      setTags([]);
+      setTagInput('');
       // 如果开启自动获取图标，尝试获取新图标
       if (autoFetchIcon && finalUrl) {
         handleFetchIcon();
@@ -255,7 +309,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-700">
+      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-hidden border border-slate-200 dark:border-slate-700 flex flex-col">
         <div className="flex justify-between items-center p-4 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-semibold dark:text-white">
@@ -307,7 +361,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
           </button>
         </div>
 
-        <form onSubmit={handleSave} className="p-4 space-y-4">
+        <form onSubmit={handleSave} className="p-4 space-y-4 overflow-y-auto">
           <div>
             <label className="block text-sm font-medium mb-1 dark:text-slate-300">标题</label>
             <input
@@ -423,6 +477,48 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
               </optgroup>
             ))}
             </select>
+          </div>
+
+          <div>
+            <label htmlFor="link-tags" className="block text-sm font-medium mb-1 dark:text-slate-300">标签 (选填)</label>
+            <div className="min-h-10 flex flex-wrap items-center gap-1.5 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
+              {tags.map(tag => (
+                <span key={tag} className="inline-flex items-center gap-1 max-w-full px-2 py-1 rounded-md bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-medium">
+                  <span className="truncate">{tag}</span>
+                  <button type="button" onClick={() => removeTag(tag)} className="shrink-0 rounded-sm hover:bg-blue-100 dark:hover:bg-blue-800" aria-label={`删除标签 ${tag}`}>
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+              <div className="flex items-center gap-1 flex-1 min-w-[120px]">
+                <Tag size={14} className="shrink-0 text-slate-400" />
+                <input
+                  id="link-tags"
+                  type="text"
+                  value={tagInput}
+                  onChange={(event) => setTagInput(event.target.value)}
+                  onKeyDown={handleTagKeyDown}
+                  onBlur={() => addTags(tagInput)}
+                  disabled={tags.length >= 10}
+                  maxLength={60}
+                  className="w-full min-w-0 bg-transparent text-sm text-slate-900 dark:text-white outline-none disabled:cursor-not-allowed"
+                  placeholder={tags.length >= 10 ? '最多 10 个标签' : '输入后按回车或逗号'}
+                />
+              </div>
+            </div>
+            {availableTags.some(tag => !tags.some(current => current.toLocaleLowerCase() === tag.toLocaleLowerCase())) && tags.length < 10 && (
+              <div className="flex flex-wrap gap-1.5 mt-2" aria-label="已有标签">
+                {availableTags
+                  .filter(tag => !tags.some(current => current.toLocaleLowerCase() === tag.toLocaleLowerCase()))
+                  .slice(0, 8)
+                  .map(tag => (
+                    <button key={tag} type="button" onClick={() => addTags(tag)} className="px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-700 text-xs text-slate-600 dark:text-slate-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-900/40 dark:hover:text-blue-300 transition-colors">
+                      + {tag}
+                    </button>
+                  ))}
+              </div>
+            )}
+            <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">每个网站最多 10 个标签，每个标签最多 20 个字符</p>
           </div>
 
           <div className="pt-2 relative">
