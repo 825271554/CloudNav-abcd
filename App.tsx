@@ -906,7 +906,9 @@ function App() {
             
             // 登录成功后，从KV空间加载AI配置
             try {
-                const aiConfigRes = await fetch('/api/storage?getConfig=ai');
+                const aiConfigRes = await fetch('/api/storage?getConfig=ai', {
+                    headers: { 'x-auth-password': password }
+                });
                 if (aiConfigRes.ok) {
                     const aiConfigData = await aiConfigRes.json();
                     if (aiConfigData && Object.keys(aiConfigData).length > 0) {

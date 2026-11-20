@@ -39,6 +39,13 @@ export const onRequestGet = async (context: { env: Env; request: Request }) => {
     
     // 如果是获取配置请求
     if (getConfig === 'ai') {
+      const password = request.headers.get('x-auth-password');
+      if (!env.PASSWORD || password !== env.PASSWORD) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
       const aiConfig = await env.CLOUDNAV_KV.get('ai_config');
       return new Response(aiConfig || '{}', {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },

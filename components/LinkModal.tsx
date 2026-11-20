@@ -25,6 +25,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [aiError, setAiError] = useState('');
   const [isFetchingIcon, setIsFetchingIcon] = useState(false);
   const [autoFetchIcon, setAutoFetchIcon] = useState(true);
   const [batchMode, setBatchMode] = useState(false);
@@ -217,13 +218,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
 
   const handleAIAssist = async () => {
     if (!url || !title) return;
-    if (!aiConfig.apiKey) {
-        alert("请先点击侧边栏左下角设置图标配置 AI API Key");
-        return;
-    }
-
     setIsGenerating(true);
-    
+    setAiError('');
     // Parallel execution for speed
     try {
         const descPromise = generateLinkDescription(title, url, aiConfig);
@@ -236,6 +232,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
         
     } catch (e) {
         console.error("AI Assist failed", e);
+        setAiError(e instanceof Error ? e.message : 'AI 自动填写失败，请检查 AI 设置');
     } finally {
         setIsGenerating(false);
     }
@@ -459,6 +456,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, onDelete
               className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all h-20 resize-none"
               placeholder="简短描述..."
             />
+            {aiError && <p role="alert" className="mt-1.5 text-xs text-red-600 dark:text-red-400">{aiError}</p>}
           </div>
 
           <div>

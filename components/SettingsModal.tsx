@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Save, Bot, Key, Globe, Sparkles, PauseCircle, Wrench, Box, Copy, Check, LayoutTemplate, RefreshCw, Info, Download, Sidebar, Keyboard, MousePointerClick, AlertTriangle, Package, Zap, Menu } from 'lucide-react';
+import { X, Save, Bot, Key, Globe, Sparkles, PauseCircle, Wrench, Box, Copy, Check, LayoutTemplate, RefreshCw, Info, Download, Sidebar, Keyboard, MousePointerClick, AlertTriangle, Package, Zap, Menu, Loader2 } from 'lucide-react';
 import { AIConfig, LinkItem, Category, SiteSettings } from '../types';
-import { generateLinkDescription } from '../services/geminiService';
+import { fetchAIModels, generateLinkDescription, testAIConnection } from '../services/geminiService';
+import { DEFAULT_AI_BASE_URLS, type AIModel, normalizeAIConfig } from '../services/aiConfig';
 import JSZip from 'jszip';
 
 interface SettingsModalProps {
@@ -62,6 +63,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'site' | 'ai' | 'tools'>('site');
   const [localConfig, setLocalConfig] = useState<AIConfig>(config);
+  const [customHeadersText, setCustomHeadersText] = useState('{}');
+  const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [isTestingAI, setIsTestingAI] = useState(false);
+  const [aiStatus, setAiStatus] = useState('');
   
   const [localSiteSettings, setLocalSiteSettings] = useState<SiteSettings>(() => ({
       title: siteSettings?.title || 'CloudNav - 我的导航',
@@ -76,6 +82,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const shouldStopRef = useRef(false);
+  const activeAIRequestRef = useRef<AbortController | null>(null);
 
   const [password, setPassword] = useState('');
   const [domain, setDomain] = useState('');
@@ -97,7 +104,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setLocalConfig(config);
+      const nextAIConfig: AIConfig = {
+          ...config,
+          baseUrl: config.baseUrl || DEFAULT_AI_BASE_URLS[config.provider || 'gemini'],
+          userAgent: config.userAgent || '',
+          customHeaders: config.customHeaders || {},
+          timeoutSeconds: config.timeoutSeconds || 60,
+      };
+      setLocalConfig(nextAIConfig);
+      setCustomHeadersText(JSON.stringify(nextAIConfig.customHeaders, null, 2));
+      setAvailableModels([]);
+      setAiStatus('');
       const safeSettings = {
           title: siteSettings?.title || 'CloudNav - 我的导航',
           navTitle: siteSettings?.navTitle || 'CloudNav',
@@ -119,8 +136,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [isOpen, config, siteSettings]);
 
-  const handleChange = (key: keyof AIConfig, value: string) => {
-    setLocalConfig(prev => ({ ...prev, [key]: value }));
+  const handleChange = (key: keyof AIConfig, value: string | number) => {
+    setLocalConfig(prev => ({
+      ...prev,
+      [key]: value,
+      ...(key === 'provider' && prev.baseUrl === DEFAULT_AI_BASE_URLS[prev.provider]
+        ? { baseUrl: DEFAULT_AI_BASE_URLS[value as AIConfig['provider']] }
+        : {}),
+    }));
+      if (key === 'provider') setAvailableModels([]);
+      setAiStatus('');
   };
 
   const handleSiteChange = async (key: keyof SiteSettings, value: any) => {
@@ -160,14 +185,53 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleSave = () => {
-    onSave(localConfig, localSiteSettings);
+    try {
+      const normalized = normalizeAIConfig({ ...localConfig, customHeaders: JSON.parse(customHeadersText || '{}') });
+      onSave(normalized, localSiteSettings);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'AI 设置格式不正确');
+      return;
+    }
     onClose();
   };
 
+  const getTestConfig = () => normalizeAIConfig({ ...localConfig, customHeaders: JSON.parse(customHeadersText || '{}') });
+
+  const handleFetchModels = async () => {
+    setIsLoadingModels(true);
+    setAiStatus('');
+    try {
+      const models = await fetchAIModels(getTestConfig());
+      setAvailableModels(models);
+      if (!localConfig.model && models.length) handleChange('model', models[0].id);
+      setAiStatus(models.length ? `已获取 ${models.length} 个可用模型` : '接口连接成功，但没有返回模型');
+    } catch (error) {
+      setAiStatus(error instanceof Error ? error.message : '获取模型失败');
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
+  const handleTestAI = async () => {
+    setIsTestingAI(true);
+    setAiStatus('');
+    try {
+      const latencyMs = await testAIConnection(getTestConfig());
+      setAiStatus(`连接成功，响应时间 ${latencyMs} ms`);
+    } catch (error) {
+      setAiStatus(error instanceof Error ? error.message : '连接测试失败');
+    } finally {
+      setIsTestingAI(false);
+    }
+  };
+
   const handleBulkGenerate = async () => {
-    if (!localConfig.apiKey) {
-        alert("请先配置并保存 API Key");
-        return;
+    let runConfig: AIConfig;
+    try {
+      runConfig = getTestConfig();
+    } catch (error) {
+      setAiStatus(error instanceof Error ? error.message : 'AI 设置格式不正确');
+      return;
     }
 
     const missingLinks = links.filter(l => !l.description);
@@ -188,13 +252,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         if (shouldStopRef.current) break;
 
         const link = missingLinks[i];
+        const controller = new AbortController();
+        activeAIRequestRef.current = controller;
         try {
-            const desc = await generateLinkDescription(link.title, link.url, localConfig);
+            const desc = await generateLinkDescription(link.title, link.url, runConfig, { signal: controller.signal });
             currentLinks = currentLinks.map(l => l.id === link.id ? { ...l, description: desc } : l);
             onUpdateLinks(currentLinks);
             setProgress({ current: i + 1, total: missingLinks.length });
         } catch (e) {
-            console.error(`Failed to generate for ${link.title}`, e);
+            if (!shouldStopRef.current) {
+                const detail = e instanceof Error ? e.message : '请求失败';
+                setAiStatus(`${link.title}：${detail}`);
+                console.error(`Failed to generate for ${link.title}`, e);
+            }
+        } finally {
+            if (activeAIRequestRef.current === controller) activeAIRequestRef.current = null;
         }
     }
 
@@ -1158,31 +1230,55 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     className="w-full pl-10 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                 />
                             </div>
-                            <p className="text-xs text-slate-500 mt-1">Key 仅存储在本地浏览器缓存中，不会发送到我们的服务器。</p>
+                            <p className="text-xs text-slate-500 mt-1">登录后配置会同步到 CloudNav 存储，调用时由服务端转发到所选 AI 服务。</p>
                         </div>
 
-                        {localConfig.provider === 'openai' && (
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Base URL (API 地址)</label>
-                                <input 
-                                    type="text" 
-                                    value={localConfig.baseUrl}
-                                    onChange={(e) => handleChange('baseUrl', e.target.value)}
-                                    placeholder="https://api.openai.com/v1"
-                                    className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                            </div>
-                        )}
+                        <div>
+                            <label htmlFor="ai-base-url" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">API 地址</label>
+                            <input id="ai-base-url" type="url" value={localConfig.baseUrl || DEFAULT_AI_BASE_URLS[localConfig.provider]} onChange={(e) => handleChange('baseUrl', e.target.value)} placeholder={DEFAULT_AI_BASE_URLS[localConfig.provider]} className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500" />
+                            <p className="text-xs text-slate-500 mt-1">需是公网可访问的 API 地址，支持自定义兼容服务。</p>
+                        </div>
 
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">模型名称 (Model Name)</label>
-                            <input 
-                                type="text" 
-                                value={localConfig.model}
-                                onChange={(e) => handleChange('model', e.target.value)}
-                                placeholder={localConfig.provider === 'gemini' ? "gemini-2.5-flash" : "gpt-3.5-turbo"}
-                                className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
-                            />
+                            <div className="flex items-center justify-between gap-3 mb-1">
+                                <label htmlFor="ai-model" className="block text-sm font-medium text-slate-700 dark:text-slate-300">模型名称</label>
+                                <button type="button" onClick={handleFetchModels} disabled={isLoadingModels} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50">
+                                    {isLoadingModels ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                                    获取模型
+                                </button>
+                            </div>
+                            {availableModels.length > 0 && (
+                                <select aria-label="选择模型" value={availableModels.some(model => model.id === localConfig.model) ? localConfig.model : ''} onChange={(e) => { if (e.target.value) handleChange('model', e.target.value); }} className="w-full mb-2 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500">
+                                    <option value="">从模型列表选择</option>
+                                    {availableModels.map(model => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+                                </select>
+                            )}
+                            <input id="ai-model" type="text" value={localConfig.model} onChange={(e) => handleChange('model', e.target.value)} placeholder={localConfig.provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o-mini'} className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+
+                        <div>
+                            <label htmlFor="ai-user-agent" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">User-Agent</label>
+                            <input id="ai-user-agent" type="text" value={localConfig.userAgent || ''} onChange={(e) => handleChange('userAgent', e.target.value)} placeholder="留空使用 CloudNav/1.0" maxLength={512} className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500" />
+                            <p className="text-xs text-slate-500 mt-1">由服务端发送该请求头。</p>
+                        </div>
+
+                        <div>
+                            <label htmlFor="ai-custom-headers" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">自定义请求头 (JSON)</label>
+                            <textarea id="ai-custom-headers" value={customHeadersText} onChange={(e) => { setCustomHeadersText(e.target.value); setAiStatus(''); }} rows={4} spellCheck={false} className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white font-mono text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder={'{\n  "X-Custom-Header": "value"\n}'} />
+                            <p className="text-xs text-slate-500 mt-1">使用 JSON 对象。认证头、User-Agent、Content-Type 使用各自设置项。</p>
+                        </div>
+
+                        <div>
+                            <label htmlFor="ai-timeout" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">请求超时 (秒)</label>
+                            <input id="ai-timeout" type="number" min={5} max={300} step={1} value={localConfig.timeoutSeconds || 60} onChange={(e) => handleChange('timeoutSeconds', Number(e.target.value))} className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            <button type="button" onClick={handleTestAI} disabled={isTestingAI || isLoadingModels} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+                                {isTestingAI ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                                测试连接
+                            </button>
+                            {aiStatus && <span role="status" aria-live="polite" className="text-sm text-slate-600 dark:text-slate-300">{aiStatus}</span>}
                         </div>
 
                         <div className="pt-4 border-t border-slate-100 dark:border-slate-700">
@@ -1191,7 +1287,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 <div className="space-y-2">
                                     <div className="flex justify-between text-xs text-slate-600 dark:text-slate-400">
                                         <span>正在生成描述... ({progress.current}/{progress.total})</span>
-                                        <button onClick={() => { shouldStopRef.current = true; setIsProcessing(false); }} className="text-red-500 flex items-center gap-1 hover:underline">
+                                        <button onClick={() => { shouldStopRef.current = true; activeAIRequestRef.current?.abort(); }} className="text-red-500 flex items-center gap-1 hover:underline">
                                             <PauseCircle size={12}/> 停止
                                         </button>
                                     </div>

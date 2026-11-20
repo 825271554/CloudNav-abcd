@@ -48,6 +48,9 @@ export interface AIConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  userAgent?: string;
+  customHeaders?: Record<string, string>;
+  timeoutSeconds?: number;
   websiteTitle?: string; // 网站标题 (浏览器标签)
   faviconUrl?: string; // 网站图标URL
   navigationName?: string;
